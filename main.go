@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	needle string = "https://randomfakewebsite.com"
+	needle string = "https://example.com/"
 )
 
 func checkUrl(uri string) (string, bool) {
