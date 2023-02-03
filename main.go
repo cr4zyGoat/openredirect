@@ -2,69 +2,23 @@ package main
 
 import (
 	"bufio"
+	"crypto/tls"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
 	"net/url"
 	"os"
-	"sync"
+
+	"github.com/cr4zygoat/openredirect/runtime"
 )
-
-const (
-	needle string = "https://example.com/"
-)
-
-func checkUrl(uri string) (string, bool) {
-	uneedle, _ := url.Parse(needle)
-	u, err := url.Parse(uri)
-	if err != nil {
-		log.Println()
-		return "", false
-	}
-
-	if u.RawQuery == "" {
-		return "", false
-	}
-
-	client := &http.Client{
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
-
-	parameters := u.Query()
-	for k := range parameters {
-		v := parameters.Get(k)
-
-		parameters.Set(k, needle)
-		u.RawQuery = parameters.Encode()
-
-		res, err := client.Get(u.String())
-		if err != nil {
-			return "", false
-		}
-
-		if res.StatusCode >= 300 && res.StatusCode < 400 {
-			location, err := res.Location()
-			if err != nil {
-				continue
-			}
-
-			if location.Host == uneedle.Host {
-				return u.String(), true
-			}
-		}
-
-		parameters.Set(k, v)
-	}
-
-	return "", false
-}
 
 func main() {
 	pfile := flag.String("f", "", "File with the target URLs")
-	pthreads := flag.Int("t", 10, "Threads to execute")
+	pproxy := flag.String("proxy", "", "Proxy with the format 'http://proxyhost:port'")
+	pthreads := flag.Int("t", 150, "Max number of URLs to check at the same time")
+	pthreadshost := flag.Int("tpd", 3, "Threads to execute per host")
+	pinsecure := flag.Bool("insecure", false, "Skip TLS verification")
 	flag.Parse()
 
 	var sc *bufio.Scanner
@@ -79,25 +33,26 @@ func main() {
 		sc = bufio.NewScanner(pf)
 	}
 
-	wg := new(sync.WaitGroup)
-	cthreads := make(chan bool, *pthreads)
-
-	for sc.Scan() {
-		uri := sc.Text()
-		wg.Add(1)
-
-		go func(uri string) {
-			cthreads <- true
-
-			openredirect, vulnerable := checkUrl(uri)
-			if vulnerable {
-				fmt.Println(openredirect)
-			}
-
-			<-cthreads
-			wg.Done()
-		}(uri)
+	transport := &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: *pinsecure},
 	}
 
-	wg.Wait()
+	if *pproxy != "" {
+		u, err := url.Parse(*pproxy)
+		if err != nil {
+			log.Println(err)
+		}
+
+		transport.Proxy = http.ProxyURL(u)
+	}
+
+	runner := runtime.NewRunner(*pthreads, *pthreadshost)
+	runner.SetTransport(transport)
+
+	output := make(chan string)
+	go runner.Run(sc, output)
+
+	for link := range output {
+		fmt.Println(link)
+	}
 }
