@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"bufio"
+	"crypto/tls"
 	"net/http"
 	"net/url"
 	"sync"
@@ -11,34 +12,54 @@ const (
 	needle string = "https://example.com/"
 )
 
+type RunnerConfig struct {
+	Threads      int
+	ThreadsHost  int
+	Smart        bool
+	ProxyAddress string
+	Insecure     bool
+}
+
 type runner struct {
 	modify       chan bool
 	cthreads     chan bool
 	cthreadshost map[string]chan bool
 	ithreadshost int
+	smart        bool
 	needle       *url.URL
 	client       *http.Client
 }
 
-func NewRunner(threads int, threadshost int) *runner {
+func NewRunner(cfg RunnerConfig) (*runner, error) {
 	runner := new(runner)
 	runner.modify = make(chan bool, 1)
-	runner.cthreads = make(chan bool, threads)
+	runner.cthreads = make(chan bool, cfg.Threads)
 	runner.cthreadshost = make(map[string]chan bool)
-	runner.ithreadshost = threadshost
+	runner.ithreadshost = cfg.ThreadsHost
 	runner.needle, _ = url.Parse(needle)
+	runner.smart = cfg.Smart
+
+	transport := &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: cfg.Insecure},
+	}
+
+	if cfg.ProxyAddress != "" {
+		u, err := url.Parse(cfg.ProxyAddress)
+		if err != nil {
+			return nil, err
+		}
+
+		transport.Proxy = http.ProxyURL(u)
+	}
 
 	runner.client = &http.Client{
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
+		Transport: transport,
 	}
 
-	return runner
-}
-
-func (r *runner) SetTransport(transport *http.Transport) {
-	r.client.Transport = transport
+	return runner, nil
 }
 
 func (r *runner) checkUrl(u *url.URL) (string, bool) {
@@ -48,6 +69,10 @@ func (r *runner) checkUrl(u *url.URL) (string, bool) {
 
 	parameters := u.Query()
 	for k := range parameters {
+		if r.smart && !IsOpenRedirectParam(k) {
+			continue
+		}
+
 		v := parameters.Get(k)
 
 		parameters.Set(k, needle)
@@ -110,4 +135,5 @@ func (r *runner) Run(sc *bufio.Scanner, output chan string) {
 	}
 
 	wg.Wait()
+	close(output)
 }
